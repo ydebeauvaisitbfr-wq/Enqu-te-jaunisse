@@ -55,18 +55,24 @@
         .no-scroll {
             overflow: hidden;
         }
+        
+        /* Ajout d'une zone de sécurité pour les iPhones récents (encoche en bas) */
+        .pb-safe {
+            padding-bottom: env(safe-area-inset-bottom);
+        }
     </style>
 </head>
-<body class="text-gray-800 antialiased h-screen flex flex-col overflow-hidden">
+<!-- Utilisation de h-[100dvh] (Dynamic Viewport Height) pour régler le bug sur mobile -->
+<body class="text-gray-800 antialiased h-[100dvh] flex flex-col overflow-hidden">
 
-    <div class="max-w-md w-full mx-auto bg-white h-full shadow-lg flex flex-col relative">
+    <div class="max-w-md w-full mx-auto bg-white h-full shadow-lg flex flex-col relative overflow-hidden">
         
-        <!-- En-tête -->
+        <!-- En-tête (Fixe en haut) -->
         <header class="bg-emerald-700 text-white p-4 shadow-md z-50 flex-shrink-0">
             <h1 class="text-xl font-bold text-center"><i class="fas fa-leaf mr-2"></i>Relevé Jaunisse</h1>
         </header>
 
-        <!-- Barre de statut GPS -->
+        <!-- Barre de statut GPS (Fixe sous l'en-tête) -->
         <div id="gps-status" class="bg-yellow-100 border-b border-yellow-200 text-yellow-800 px-4 py-2 text-sm flex items-center justify-between flex-shrink-0 z-50">
             <div class="flex items-center">
                 <i id="gps-icon" class="fas fa-satellite-dish animate-pulse mr-2"></i>
@@ -75,7 +81,9 @@
             <span id="gps-accuracy" class="text-xs font-bold bg-yellow-200 px-2 py-1 rounded-full hidden"></span>
         </div>
 
-        <div id="main-content" class="flex-grow overflow-y-auto relative bg-gray-50 pb-16">
+        <!-- Contenu Principal (Prend toute la place restante) -->
+        <!-- Suppression du pb-16 car la navigation n'est plus absolue -->
+        <div id="main-content" class="flex-grow overflow-y-auto relative bg-gray-50 h-full">
             
             <!-- VUE 1 : RELEVÉ (SAISIE) -->
             <main id="view-releve" class="p-4 flex flex-col gap-4 min-h-full">
@@ -112,7 +120,7 @@
                 <div class="flex justify-between items-end mb-2">
                     <h2 class="text-lg font-bold text-gray-700">Derniers relevés (<span id="record-count">0</span>)</h2>
                     <div class="flex gap-2">
-                        <!-- Nouveaux boutons de synchronisation -->
+                        <!-- Boutons de synchronisation -->
                         <input type="file" id="import-file" class="hidden" accept=".json" onchange="importJSON(event)">
                         <button onclick="document.getElementById('import-file').click()" class="text-sm bg-purple-100 hover:bg-purple-200 text-purple-700 px-3 py-1.5 rounded-lg shadow transition" title="Importer les données d'un collègue">
                             <i class="fas fa-file-import"></i>
@@ -189,8 +197,8 @@
 
         </div>
 
-        <!-- Barre de Navigation Basse -->
-        <nav class="bg-white border-t border-gray-200 absolute bottom-0 w-full z-50 flex justify-around items-center h-16 pb-safe">
+        <!-- Barre de Navigation Basse (Désormais fixée dans le flux flexbox, ne sera plus cachée) -->
+        <nav class="bg-white border-t border-gray-200 w-full z-50 flex justify-around items-center h-16 flex-shrink-0 pb-safe">
             <button onclick="switchTab('releve')" id="nav-releve" class="nav-btn flex-1 flex flex-col items-center justify-center h-full text-emerald-700 font-bold">
                 <i class="fas fa-pen-to-square text-xl mb-1"></i>
                 <span class="text-[10px] uppercase tracking-wider">Saisie</span>
