@@ -18,6 +18,10 @@
     <!-- Chart.js (Graphiques) -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
+    <!-- Leaflet Routing Machine (Itinéraires) -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+    <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+
     <!-- html2canvas (Capture d'image de la carte) -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 
@@ -186,6 +190,10 @@
                 <div class="absolute bottom-4 left-4 right-4 z-[400] bg-white p-3 rounded-lg shadow-lg flex justify-between items-center text-sm border border-gray-200 print-hide md:max-w-md md:left-1/2 md:-translate-x-1/2">
                     <span class="font-bold text-gray-700">Points: <span id="map-point-count" class="text-emerald-600 text-base">0</span></span>
                     <div class="flex gap-2">
+                        <!-- NOUVEAU: Bouton Itinéraire -->
+                        <button id="btn-route" onclick="toggleRouteMode()" class="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-md hover:bg-blue-200 transition font-medium shadow-sm" title="Créer un itinéraire">
+                            <i class="fas fa-route mr-1"></i> Guidage
+                        </button>
                         <!-- NOUVEAU: Bouton Capture Image -->
                         <button onclick="exportMapImage()" class="bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-md hover:bg-indigo-200 transition font-medium shadow-sm">
                             <i class="fas fa-camera mr-1"></i> Capturer
@@ -308,6 +316,8 @@
         let chartInstance = null;
         let userMarker = null; 
         let accuracyCircle = null; 
+        let routingControl = null; // Contrôleur d'itinéraire
+        let isRouteMode = false; // État du mode itinéraire
         
         // État des filtres multiples (Set permet de gérer des sélections uniques)
         let selectedDepts = new Set();
@@ -681,6 +691,13 @@
                 
                 L.control.zoom({ position: 'bottomright' }).addTo(map);
                 mapLayerGroup = L.featureGroup().addTo(map);
+
+                // Clic sur la carte pour définir la destination de l'itinéraire
+                map.on('click', function(e) {
+                    if (isRouteMode) {
+                        calculateRoute(e.latlng);
+                    }
+                });
             }
             
             setTimeout(() => { if(map) map.invalidateSize(); }, 100);
@@ -782,6 +799,62 @@
             } else if (currentPosition) {
                 map.setView([currentPosition.coords.latitude, currentPosition.coords.longitude], 14, { animate: true });
             }
+        }
+
+        // --- GESTION DES ITINÉRAIRES ---
+        function toggleRouteMode() {
+            isRouteMode = !isRouteMode;
+            const btnRoute = document.getElementById('btn-route');
+            
+            if (isRouteMode) {
+                btnRoute.classList.replace('bg-blue-100', 'bg-blue-600');
+                btnRoute.classList.replace('text-blue-700', 'text-white');
+                showToast("Mode Guidage : Cliquez sur la carte pour définir la zone cible", "info");
+            } else {
+                btnRoute.classList.replace('bg-blue-600', 'bg-blue-100');
+                btnRoute.classList.replace('text-white', 'text-blue-700');
+                if (routingControl) {
+                    map.removeControl(routingControl);
+                    routingControl = null;
+                }
+                showToast("Mode Guidage désactivé");
+            }
+        }
+
+        function calculateRoute(destLatLng) {
+            if (!currentPosition) {
+                showToast("En attente du signal GPS pour tracer la route...", "error");
+                return;
+            }
+
+            const startLatLng = L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude);
+
+            if (routingControl) {
+                routingControl.setWaypoints([startLatLng, destLatLng]);
+            } else {
+                routingControl = L.Routing.control({
+                    waypoints: [startLatLng, destLatLng],
+                    routeWhileDragging: true,
+                    language: 'fr',
+                    show: false, // Cache les instructions textuelles pour sauver de la place sur mobile
+                    addWaypoints: false,
+                    lineOptions: {
+                        styles: [{color: '#3b82f6', opacity: 0.9, weight: 6, dashArray: '10, 10'}] // Ligne pointillée bleue
+                    },
+                    createMarker: function(i, wp, nWps) {
+                        if (i === nWps - 1) { // Marqueur uniquement à l'arrivée
+                            return L.marker(wp.latLng, {
+                                icon: L.divIcon({
+                                    className: 'bg-red-500 w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(220,38,38,0.8)]',
+                                    iconSize: [16, 16]
+                                })
+                            }).bindPopup("<b>Zone d'observation</b><br>Faites glisser la ligne bleue pour modifier le trajet !").openPopup();
+                        }
+                        return null; // Pas de marqueur au départ car le GPS est déjà là
+                    }
+                }).addTo(map);
+            }
+            showToast("Calcul de l'itinéraire en cours...");
         }
 
         // Fonction d'export de la carte en image (PNG) via html2canvas
