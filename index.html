@@ -190,9 +190,9 @@
                 <div class="absolute bottom-4 left-4 right-4 z-[400] bg-white p-3 rounded-lg shadow-lg flex justify-between items-center text-sm border border-gray-200 print-hide md:max-w-md md:left-1/2 md:-translate-x-1/2">
                     <span class="font-bold text-gray-700">Points: <span id="map-point-count" class="text-emerald-600 text-base">0</span></span>
                     <div class="flex gap-2">
-                        <!-- NOUVEAU: Bouton Itinéraire -->
-                        <button id="btn-route" onclick="toggleRouteMode()" class="bg-blue-100 text-blue-700 px-3 py-1.5 rounded-md hover:bg-blue-200 transition font-medium shadow-sm" title="Créer un itinéraire">
-                            <i class="fas fa-route mr-1"></i> Guidage
+                        <!-- NOUVEAU: Bouton Itinéraire d'Exploration -->
+                        <button id="btn-route" onclick="toggleRouteMode()" class="bg-purple-100 text-purple-700 px-3 py-1.5 rounded-md hover:bg-purple-200 transition font-medium shadow-sm" title="Créer un itinéraire vers les zones non cartographiées">
+                            <i class="fas fa-route mr-1"></i> Explorer
                         </button>
                         <!-- NOUVEAU: Bouton Capture Image -->
                         <button onclick="exportMapImage()" class="bg-indigo-100 text-indigo-700 px-3 py-1.5 rounded-md hover:bg-indigo-200 transition font-medium shadow-sm">
@@ -807,17 +807,17 @@
             const btnRoute = document.getElementById('btn-route');
             
             if (isRouteMode) {
-                btnRoute.classList.replace('bg-blue-100', 'bg-blue-600');
-                btnRoute.classList.replace('text-blue-700', 'text-white');
-                showToast("Mode Guidage : Cliquez sur la carte pour définir la zone cible", "info");
+                btnRoute.classList.replace('bg-purple-100', 'bg-purple-600');
+                btnRoute.classList.replace('text-purple-700', 'text-white');
+                showToast("Mode Exploration : Cliquez sur la destination. L'IA ciblera les zones vides.", "info");
             } else {
-                btnRoute.classList.replace('bg-blue-600', 'bg-blue-100');
-                btnRoute.classList.replace('text-white', 'text-blue-700');
+                btnRoute.classList.replace('bg-purple-600', 'bg-purple-100');
+                btnRoute.classList.replace('text-white', 'text-purple-700');
                 if (routingControl) {
                     map.removeControl(routingControl);
                     routingControl = null;
                 }
-                showToast("Mode Guidage désactivé");
+                showToast("Mode Exploration désactivé");
             }
         }
 
@@ -829,32 +829,93 @@
 
             const startLatLng = L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude);
 
+            showToast("Analyse des zones vides et calcul du parcours...", "info");
+
+            // --- ALGORITHME D'EXPLORATION (Éviter les zones connues) ---
+            let waypoints = [startLatLng];
+            const distanceTotal = startLatLng.distanceTo(destLatLng);
+
+            // Si le trajet fait plus de 3km, on cherche des détours stratégiques
+            if (records.length > 0 && distanceTotal > 3000) {
+                // On va générer 2 points de passage intermédiaires (1/3 et 2/3 du parcours)
+                for (let i = 1; i <= 2; i++) {
+                    const fraction = i / 3;
+                    const midLat = startLatLng.lat + (destLatLng.lat - startLatLng.lat) * fraction;
+                    const midLng = startLatLng.lng + (destLatLng.lng - startLatLng.lng) * fraction;
+                    
+                    // Vecteur perpendiculaire pour écarter le point du trajet direct (et éviter les autoroutes)
+                    const dx = destLatLng.lng - startLatLng.lng;
+                    const dy = destLatLng.lat - startLatLng.lat;
+                    
+                    // 3 candidats par palier : au centre, écarté à gauche, écarté à droite
+                    const candidates = [
+                        L.latLng(midLat, midLng),
+                        L.latLng(midLat + dx * 0.3, midLng - dy * 0.3),
+                        L.latLng(midLat - dx * 0.3, midLng + dy * 0.3)
+                    ];
+
+                    let bestCandidate = null;
+                    let minDensity = Infinity;
+                    
+                    // Le rayon de recherche s'adapte à la distance du trajet (ex: 15%)
+                    const searchRadius = Math.max(2000, distanceTotal * 0.15); 
+
+                    candidates.forEach(cand => {
+                        let density = 0;
+                        records.forEach(rec => {
+                            const pt = L.latLng(rec.lat, rec.lng);
+                            if (cand.distanceTo(pt) < searchRadius) {
+                                density++;
+                            }
+                        });
+
+                        // On favorise fortement les candidats avec très peu/zéro point autour
+                        if (density < minDensity) {
+                            minDensity = density;
+                            bestCandidate = cand;
+                        }
+                    });
+
+                    if (bestCandidate) {
+                        waypoints.push(bestCandidate);
+                    }
+                }
+            }
+
+            waypoints.push(destLatLng);
+
             if (routingControl) {
-                routingControl.setWaypoints([startLatLng, destLatLng]);
+                routingControl.setWaypoints(waypoints);
             } else {
                 routingControl = L.Routing.control({
-                    waypoints: [startLatLng, destLatLng],
+                    waypoints: waypoints,
                     routeWhileDragging: true,
                     language: 'fr',
-                    show: false, // Cache les instructions textuelles pour sauver de la place sur mobile
-                    addWaypoints: false,
+                    show: false, // Cache les instructions textuelles pour sauver de la place
+                    addWaypoints: true,
                     lineOptions: {
-                        styles: [{color: '#3b82f6', opacity: 0.9, weight: 6, dashArray: '10, 10'}] // Ligne pointillée bleue
+                        styles: [{color: '#8b5cf6', opacity: 0.9, weight: 6, dashArray: '10, 10'}] // Ligne pointillée violette
                     },
                     createMarker: function(i, wp, nWps) {
+                        if (i === 0) return null; // Pas de marqueur au départ
                         if (i === nWps - 1) { // Marqueur uniquement à l'arrivée
                             return L.marker(wp.latLng, {
                                 icon: L.divIcon({
                                     className: 'bg-red-500 w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(220,38,38,0.8)]',
                                     iconSize: [16, 16]
                                 })
-                            }).bindPopup("<b>Zone d'observation</b><br>Faites glisser la ligne bleue pour modifier le trajet !").openPopup();
+                            }).bindPopup("<b>Zone d'observation cible</b><br>Fin du parcours.").openPopup();
                         }
-                        return null; // Pas de marqueur au départ car le GPS est déjà là
+                        // Marqueur pour les points de passage secrets de l'algorithme (vides de données)
+                        return L.marker(wp.latLng, {
+                            icon: L.divIcon({
+                                className: 'bg-purple-500 w-3 h-3 rounded-full border border-white opacity-90 shadow-sm',
+                                iconSize: [12, 12]
+                            })
+                        }).bindPopup("Point d'exploration (Zone peu ou pas cartographiée)");
                     }
                 }).addTo(map);
             }
-            showToast("Calcul de l'itinéraire en cours...");
         }
 
         // Fonction d'export de la carte en image (PNG) via html2canvas
