@@ -186,6 +186,17 @@
                     </div>
                 </div>
 
+                <!-- NOUVEAU: Panneau Route (Temps & Multi-points) -->
+                <div id="route-panel" class="hidden absolute top-24 left-1/2 -translate-x-1/2 z-[1000] bg-white/95 backdrop-blur-sm p-2.5 rounded-lg shadow-xl border border-purple-200 flex flex-col items-center gap-2 min-w-[250px] transition-all print-hide">
+                    <div id="route-info" class="text-purple-800 font-bold text-sm text-center w-full">
+                        Cliquez sur la carte pour tracer
+                    </div>
+                    <div class="flex gap-2 w-full">
+                        <button onclick="undoRoutePoint()" class="flex-1 px-2 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-xs font-medium transition shadow-sm"><i class="fas fa-undo mr-1"></i>Retrait</button>
+                        <button onclick="clearRoute()" class="flex-1 px-2 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-md text-xs font-medium transition shadow-sm"><i class="fas fa-trash mr-1"></i>Effacer</button>
+                    </div>
+                </div>
+
                 <!-- Panneau résumé carte & Bouton Capture -->
                 <div class="absolute bottom-4 left-4 right-4 z-[400] bg-white p-3 rounded-lg shadow-lg flex justify-between items-center text-sm border border-gray-200 print-hide md:max-w-md md:left-1/2 md:-translate-x-1/2">
                     <span class="font-bold text-gray-700">Points: <span id="map-point-count" class="text-emerald-600 text-base">0</span></span>
@@ -312,12 +323,13 @@
         let records = [];
         let map = null;
         let mapLayerGroup = null;
-        let deptGeoJsonLayer = null; // <-- NOUVELLE VARIABLE POUR LA BORDURE
+        let deptGeoJsonLayer = null;
         let chartInstance = null;
         let userMarker = null; 
         let accuracyCircle = null; 
         let routingControl = null; // Contrôleur d'itinéraire
         let isRouteMode = false; // État du mode itinéraire
+        let routeWaypoints = []; // NOUVEAU : Liste des points d'étapes (multiples)
         
         // État des filtres multiples (Set permet de gérer des sélections uniques)
         let selectedDepts = new Set();
@@ -695,7 +707,7 @@
                 // Clic sur la carte pour définir la destination de l'itinéraire
                 map.on('click', function(e) {
                     if (isRouteMode) {
-                        calculateRoute(e.latlng);
+                        addRoutePoint(e.latlng);
                     }
                 });
             }
@@ -805,116 +817,122 @@
         function toggleRouteMode() {
             isRouteMode = !isRouteMode;
             const btnRoute = document.getElementById('btn-route');
+            const routePanel = document.getElementById('route-panel');
             
             if (isRouteMode) {
                 btnRoute.classList.replace('bg-purple-100', 'bg-purple-600');
                 btnRoute.classList.replace('text-purple-700', 'text-white');
-                showToast("Mode Exploration : Cliquez sur la destination. L'IA ciblera les zones vides.", "info");
+                routePanel.classList.remove('hidden');
+                
+                // Initialiser le départ avec la position actuelle si disponible
+                if (currentPosition && routeWaypoints.length === 0) {
+                    routeWaypoints = [L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude)];
+                }
+                
+                showToast("Mode Exploration : Cliquez pour ajouter des étapes.", "info");
             } else {
                 btnRoute.classList.replace('bg-purple-600', 'bg-purple-100');
                 btnRoute.classList.replace('text-white', 'text-purple-700');
-                if (routingControl) {
-                    map.removeControl(routingControl);
-                    routingControl = null;
-                }
+                routePanel.classList.add('hidden');
                 showToast("Mode Exploration désactivé");
             }
         }
 
-        function calculateRoute(destLatLng) {
-            if (!currentPosition) {
-                showToast("En attente du signal GPS pour tracer la route...", "error");
+        function addRoutePoint(latlng) {
+            if (routeWaypoints.length === 0 && currentPosition) {
+                routeWaypoints.push(L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude));
+            }
+            routeWaypoints.push(latlng);
+            updateRoutingControl();
+        }
+
+        function undoRoutePoint() {
+            if (routeWaypoints.length > 1) {
+                routeWaypoints.pop(); // Retire la dernière étape cliquée
+                updateRoutingControl();
+            } else {
+                showToast("Il n'y a plus d'étapes à retirer.", "warning");
+            }
+        }
+
+        function clearRoute() {
+            routeWaypoints = currentPosition ? [L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude)] : [];
+            if (routingControl) {
+                map.removeControl(routingControl);
+                routingControl = null;
+            }
+            document.getElementById('route-info').innerHTML = `Cliquez sur la carte pour tracer`;
+        }
+
+        function updateRoutingControl() {
+            if (routeWaypoints.length < 2) {
+                if(routingControl) { map.removeControl(routingControl); routingControl = null; }
+                document.getElementById('route-info').innerHTML = `Cliquez sur la carte pour tracer`;
                 return;
             }
-
-            const startLatLng = L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude);
-
-            showToast("Analyse des zones vides et calcul du parcours...", "info");
-
-            // --- ALGORITHME D'EXPLORATION (Éviter les zones connues) ---
-            let waypoints = [startLatLng];
-            const distanceTotal = startLatLng.distanceTo(destLatLng);
-
-            // Si le trajet fait plus de 3km, on cherche des détours stratégiques
-            if (records.length > 0 && distanceTotal > 3000) {
-                // On va générer 2 points de passage intermédiaires (1/3 et 2/3 du parcours)
-                for (let i = 1; i <= 2; i++) {
-                    const fraction = i / 3;
-                    const midLat = startLatLng.lat + (destLatLng.lat - startLatLng.lat) * fraction;
-                    const midLng = startLatLng.lng + (destLatLng.lng - startLatLng.lng) * fraction;
-                    
-                    // Vecteur perpendiculaire pour écarter le point du trajet direct (et éviter les autoroutes)
-                    const dx = destLatLng.lng - startLatLng.lng;
-                    const dy = destLatLng.lat - startLatLng.lat;
-                    
-                    // 3 candidats par palier : au centre, écarté à gauche, écarté à droite
-                    const candidates = [
-                        L.latLng(midLat, midLng),
-                        L.latLng(midLat + dx * 0.3, midLng - dy * 0.3),
-                        L.latLng(midLat - dx * 0.3, midLng + dy * 0.3)
-                    ];
-
-                    let bestCandidate = null;
-                    let minDensity = Infinity;
-                    
-                    // Le rayon de recherche s'adapte à la distance du trajet (ex: 15%)
-                    const searchRadius = Math.max(2000, distanceTotal * 0.15); 
-
-                    candidates.forEach(cand => {
-                        let density = 0;
-                        records.forEach(rec => {
-                            const pt = L.latLng(rec.lat, rec.lng);
-                            if (cand.distanceTo(pt) < searchRadius) {
-                                density++;
-                            }
-                        });
-
-                        // On favorise fortement les candidats avec très peu/zéro point autour
-                        if (density < minDensity) {
-                            minDensity = density;
-                            bestCandidate = cand;
-                        }
-                    });
-
-                    if (bestCandidate) {
-                        waypoints.push(bestCandidate);
-                    }
-                }
-            }
-
-            waypoints.push(destLatLng);
+            
+            document.getElementById('route-info').innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>Calcul en cours...`;
 
             if (routingControl) {
-                routingControl.setWaypoints(waypoints);
+                routingControl.setWaypoints(routeWaypoints);
             } else {
                 routingControl = L.Routing.control({
-                    waypoints: waypoints,
+                    waypoints: routeWaypoints,
                     routeWhileDragging: true,
                     language: 'fr',
-                    show: false, // Cache les instructions textuelles pour sauver de la place
+                    show: false, // Cache les instructions textuelles massives
                     addWaypoints: true,
+                    router: L.Routing.osrmv1({
+                        language: 'fr',
+                        profile: 'driving' // Profil conduite stricte : limite au max chemins de terre/demi-tours
+                    }),
                     lineOptions: {
-                        styles: [{color: '#8b5cf6', opacity: 0.9, weight: 6, dashArray: '10, 10'}] // Ligne pointillée violette
+                        styles: [{color: '#8b5cf6', opacity: 0.9, weight: 6, dashArray: '10, 10'}], // Ligne pointillée violette
+                        extendToWaypoints: true,
+                        missingRouteTolerance: 0
                     },
                     createMarker: function(i, wp, nWps) {
-                        if (i === 0) return null; // Pas de marqueur au départ
-                        if (i === nWps - 1) { // Marqueur uniquement à l'arrivée
-                            return L.marker(wp.latLng, {
-                                icon: L.divIcon({
-                                    className: 'bg-red-500 w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(220,38,38,0.8)]',
-                                    iconSize: [16, 16]
-                                })
-                            }).bindPopup("<b>Zone d'observation cible</b><br>Fin du parcours.").openPopup();
-                        }
-                        // Marqueur pour les points de passage secrets de l'algorithme (vides de données)
+                        if (i === 0) return null; // Pas de marqueur au départ (utilise le point bleu GPS)
+                        const isLast = (i === nWps - 1);
                         return L.marker(wp.latLng, {
+                            draggable: true, // Permet de déplacer les étapes manuellement
                             icon: L.divIcon({
-                                className: 'bg-purple-500 w-3 h-3 rounded-full border border-white opacity-90 shadow-sm',
-                                iconSize: [12, 12]
+                                className: isLast 
+                                    ? 'bg-red-500 w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(220,38,38,0.8)]' 
+                                    : 'bg-purple-500 w-3 h-3 rounded-full border border-white opacity-90 shadow-sm',
+                                iconSize: isLast ? [16, 16] : [12, 12]
                             })
-                        }).bindPopup("Point d'exploration (Zone peu ou pas cartographiée)");
+                        }).bindPopup(isLast ? "<b>Arrivée</b>" : "<b>Étape d'exploration</b>");
                     }
                 }).addTo(map);
+
+                // Récupération des données temps/distance une fois le calcul réussi
+                routingControl.on('routesfound', function(e) {
+                    const routes = e.routes;
+                    const summary = routes[0].summary;
+                    
+                    // Calcul du temps de trajet
+                    const timeMinutes = Math.round(summary.totalTime / 60);
+                    const hours = Math.floor(timeMinutes / 60);
+                    const mins = timeMinutes % 60;
+                    const timeStr = hours > 0 ? `${hours}h${mins.toString().padStart(2, '0')}` : `${mins} min`;
+                    
+                    // Calcul de la distance
+                    const distKm = (summary.totalDistance / 1000).toFixed(1);
+                    
+                    document.getElementById('route-info').innerHTML = `🚗 <b>${distKm} km</b> &nbsp;&bull;&nbsp; ⏳ <b>${timeStr}</b>`;
+                });
+                
+                // Maintien de la liste synchronisée si l'utilisateur glisse-dépose un marqueur
+                routingControl.on('waypointschanged', function(e) {
+                    // On filtre les null générés parfois par Leaflet Routing Machine pendant le drag
+                    routeWaypoints = e.waypoints.map(wp => wp.latLng).filter(ll => ll !== null);
+                });
+
+                routingControl.on('routingerror', function(e) {
+                    document.getElementById('route-info').innerHTML = `<span class="text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i> Erreur de tracé</span>`;
+                    showToast("Impossible de tracer une route sûre jusqu'à ce point.", "error");
+                });
             }
         }
 
