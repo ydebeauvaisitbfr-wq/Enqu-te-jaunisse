@@ -287,8 +287,10 @@
             try {
                 icon.classList.replace('text-emerald-100', 'text-blue-300'); icon.classList.add('fa-fade');
                 
-                // 1. Récupérer les données du serveur Google Sheets
-                const res = await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME);
+                // 1. Récupérer les données du serveur Google Sheets (Anti-cache ajouté)
+                const res = await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME + '&_t=' + Date.now(), {
+                    cache: 'no-store'
+                });
                 if (res.ok) {
                     const text = await res.text();
                     try {
@@ -302,10 +304,14 @@
                     }
                 }
                 
-                // 2. Envoyer les données locales (Texte brut pour contourner les blocages CORS)
+                // 2. Envoyer les données locales (Passe-droit 'no-cors' et 'text/plain' pour éviter les blocages de Google)
                 if (records.length > 0) {
                     await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME, { 
                         method: 'POST',
+                        mode: 'no-cors',
+                        headers: {
+                            'Content-Type': 'text/plain;charset=utf-8'
+                        },
                         body: JSON.stringify(records) 
                     });
                 }
