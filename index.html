@@ -226,13 +226,13 @@
     <script>
         // =========================================================
         // CONFIGURATION GOOGLE SHEETS
-        // Remplacez "VOTRE_LIEN_GOOGLE_ICI" par le lien généré
+        // Remplacez "VOTRE_LIEN_GOOGLE_ICI" par votre lien /exec
         // =========================================================
         const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbw3VzKBt6b699WsNbALw2H_-g8_A7m3uzUtXJvi20sH5bYwgUq--47p8XiGyyTkeWpc/exec";
         const APP_NAME = "jaunisse"; // Ne pas modifier
 
         const USERS_DB = { "ITB45": "Betteraves452026!", "ITB02": "Betteraves022026!", "ITB80/60": "Betteraves802026!", "ITB76": "Betteraves762026!", "ITB51": "Betteraves512026!", "ITBGRIFFON": "Griffon022026!", "ADMIN": "Admin2026!" };
-        let currentUser = ""; let syncInterval = null;
+        let currentUser = ""; let syncInterval = null; let isSyncing = false; let pendingSync = false;
         let currentPosition = null; let watchId = null; let records = []; let map = null; let mapLayerGroup = null; let deptGeoJsonLayer = null; let chartInstance = null; let userMarker = null; let accuracyCircle = null; let followGPS = true; let mapInitialCentered = false; let wakeLock = null; let wakeLockEnabled = false;
         let routingControl = null; let isRouteMode = false; let routeWaypoints = [];
         let selectedDepts = new Set(); let selectedClasses = new Set(); let selectedOperators = new Set();
@@ -243,7 +243,7 @@
         function initApp() {
             loadRecords(); startGPS(); initFilters(); initWakeLock();
             if (syncInterval) clearInterval(syncInterval);
-            syncInterval = setInterval(() => syncWithServer(false), 10000);
+            syncInterval = setInterval(() => syncWithServer(false), 15000);
             setTimeout(() => syncWithServer(true), 1000);
         }
 
@@ -278,54 +278,122 @@
             } 
         }
 
+        function setCloudColor(colorClass) {
+            const icon = document.getElementById('cloud-icon');
+            if (!icon) return;
+            icon.classList.remove('text-emerald-100', 'text-emerald-400', 'text-blue-300', 'text-red-400');
+            icon.classList.add(colorClass);
+        }
+
         async function syncWithServer(manual = false) {
-            if (!currentUser || GOOGLE_APP_URL === "VOTRE_LIEN_GOOGLE_ICI") {
-                if (manual) showToast("Lien Google Sheets non configuré.", "warning");
+            if (!currentUser) return;
+            if (!GOOGLE_APP_URL || GOOGLE_APP_URL === "VOTRE_LIEN_GOOGLE_ICI" || !GOOGLE_APP_URL.startsWith("https://script.google.com/")) {
+                setCloudColor('text-red-400');
+                if (manual) showToast("Lien Google Sheets non configuré dans le fichier !", "error");
                 return;
             }
+            if (isSyncing) {
+                pendingSync = true;
+                return;
+            }
+            isSyncing = true;
             const icon = document.getElementById('cloud-icon');
             try {
-                icon.classList.replace('text-emerald-100', 'text-blue-300'); icon.classList.add('fa-fade');
-                
-                // 1. Récupérer les données du serveur Google Sheets (Anti-cache ajouté)
-                const res = await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME + '&_t=' + Date.now(), {
-                    cache: 'no-store'
-                });
-                if (res.ok) {
-                    const text = await res.text();
-                    try {
-                        const serverRecords = JSON.parse(text);
-                        if (serverRecords && serverRecords.length > 0) {
-                            const added = mergeRecordsSilent(serverRecords);
-                            if (added > 0) { updateHistoryUI(); if (mapLayerGroup) updateMapMarkers(); initFilters(); updateStats(); if (manual) showToast(`${added} point(s) récupéré(s) !`); }
-                        }
-                    } catch (e) {
-                        console.warn("JSON invalide depuis Google Sheets");
-                    }
-                }
-                
-                // 2. Envoyer les données locales (Passe-droit 'no-cors' et 'text/plain' pour éviter les blocages de Google)
+                setCloudColor('text-blue-300');
+                if (icon) icon.classList.add('fa-fade');
+
+                // 1. Envoyer les relevés locaux vers Google Sheets (no-cors + text/plain pour contourner le blocage CORS)
                 if (records.length > 0) {
-                    await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME, { 
+                    await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME, {
                         method: 'POST',
                         mode: 'no-cors',
-                        headers: {
-                            'Content-Type': 'text/plain;charset=utf-8'
-                        },
-                        body: JSON.stringify(records) 
+                        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+                        body: JSON.stringify(records)
                     });
                 }
-                
-                icon.classList.replace('text-blue-300', 'text-emerald-400'); icon.classList.replace('text-red-400', 'text-emerald-400'); if (manual) showToast("Base synchronisée avec succès !");
-            } catch (e) { 
-                icon.classList.replace('text-emerald-400', 'text-red-400'); icon.classList.replace('text-blue-300', 'text-red-400'); icon.classList.replace('text-emerald-100', 'text-red-400');
-            } finally { icon.classList.remove('fa-fade'); }
+
+                // 2. Récupérer tous les relevés de l'équipe depuis Google Sheets
+                const res = await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME + '&_t=' + Date.now(), {
+                    method: 'GET',
+                    redirect: 'follow'
+                });
+                if (!res.ok) throw new Error("Erreur HTTP " + res.status);
+
+                const text = await res.text();
+                if (text.trim().startsWith('<')) {
+                    throw new Error("Accès refusé par Google (Vérifiez 'Tout le monde' dans Déployer)");
+                }
+
+                const serverRecords = JSON.parse(text);
+                if (!Array.isArray(serverRecords)) {
+                    throw new Error("Format de réponse invalide");
+                }
+
+                const added = mergeRecordsSilent(serverRecords);
+                if (added > 0) {
+                    updateHistoryUI();
+                    if (mapLayerGroup) updateMapMarkers();
+                    initFilters();
+                    updateStats();
+                    if (manual) showToast(`${added} point(s) récupéré(s) !`);
+                } else if (manual) {
+                    showToast("Base synchronisée avec succès !");
+                }
+
+                setCloudColor('text-emerald-400');
+            } catch (e) {
+                console.error("Erreur synchro Google Sheets :", e);
+                setCloudColor('text-red-400');
+                if (manual) showToast(e.message || "Erreur de synchronisation Google", "error");
+            } finally {
+                if (icon) icon.classList.remove('fa-fade');
+                isSyncing = false;
+                if (pendingSync) {
+                    pendingSync = false;
+                    syncWithServer(false);
+                }
+            }
         }
         
         function mergeRecordsSilent(importedRecords) {
-            let addedCount = 0; const existingSignatures = new Set(records.map(r => { const dateStr = r.timestamp.split('T')[0]; return `${dateStr}_${parseFloat(r.lat).toFixed(5)}_${parseFloat(r.lng).toFixed(5)}`; })); const existingIds = new Set(records.map(r => r.id));
-            importedRecords.forEach((rec) => { const dateStr = rec.timestamp.split('T')[0]; const signature = `${dateStr}_${parseFloat(rec.lat).toFixed(5)}_${parseFloat(rec.lng).toFixed(5)}`; if (!existingIds.has(rec.id) && !existingSignatures.has(signature)) { records.push(rec); existingIds.add(rec.id); existingSignatures.add(signature); addedCount++; } });
-            if (addedCount > 0) { records.sort((a, b) => b.id - a.id); saveRecords(); } return addedCount;
+            let addedCount = 0;
+            let updatedDept = false;
+            const existingById = new Map(records.map(r => [String(r.id), r]));
+            const existingSignatures = new Set(records.map(r => {
+                const dateStr = String(r.timestamp || '').split('T')[0];
+                return `${dateStr}_${parseFloat(r.lat).toFixed(5)}_${parseFloat(r.lng).toFixed(5)}`;
+            }));
+
+            importedRecords.forEach((rec) => {
+                if (!rec || !rec.id) return;
+                const recIdStr = String(rec.id);
+                const dateStr = String(rec.timestamp || '').split('T')[0];
+                const signature = `${dateStr}_${parseFloat(rec.lat).toFixed(5)}_${parseFloat(rec.lng).toFixed(5)}`;
+
+                if (existingById.has(recIdStr)) {
+                    const localRec = existingById.get(recIdStr);
+                    if (rec.department && rec.department !== "Calcul..." && (localRec.department === "Calcul..." || !localRec.department)) {
+                        localRec.department = rec.department;
+                        updatedDept = true;
+                    }
+                    return;
+                }
+
+                if (!existingSignatures.has(signature)) {
+                    rec.id = Number(rec.id) || rec.id;
+                    rec.classId = Number(rec.classId) || 0;
+                    records.push(rec);
+                    existingById.set(recIdStr, rec);
+                    existingSignatures.add(signature);
+                    addedCount++;
+                }
+            });
+
+            if (addedCount > 0 || updatedDept) {
+                records.sort((a, b) => Number(b.id) - Number(a.id));
+                saveRecords();
+            }
+            return addedCount;
         }
 
         async function requestWakeLock() { if ('wakeLock' in navigator && wakeLockEnabled) { try { if (!wakeLock) { wakeLock = await navigator.wakeLock.request('screen'); updateWakeLockUI(true); wakeLock.addEventListener('release', () => { wakeLock = null; updateWakeLockUI(false); }); } } catch (err) { updateWakeLockUI(false); } } }
@@ -374,7 +442,7 @@
 
         function setGPSStatus(status, message, accuracy = null) { const gpsStatusDiv = document.getElementById('gps-status'); const gpsIcon = document.getElementById('gps-icon'); const gpsText = document.getElementById('gps-text'); const gpsAccuracy = document.getElementById('gps-accuracy'); gpsText.innerText = message; gpsIcon.className = 'fas mr-2 '; gpsStatusDiv.className = 'cursor-pointer px-4 py-2 text-sm flex items-center justify-between border-b transition-colors duration-300 flex-shrink-0 z-50 '; gpsAccuracy.classList.remove('hidden'); if (status === 'good') { gpsStatusDiv.classList.add('bg-green-100', 'border-green-200', 'text-green-800'); gpsIcon.classList.add('fa-satellite-dish'); gpsAccuracy.innerText = `±${accuracy}m`; gpsAccuracy.className = 'text-xs font-bold bg-green-200 text-green-800 px-2 py-1 rounded-full'; } else if (status === 'warning') { gpsStatusDiv.classList.add('bg-yellow-100', 'border-yellow-200', 'text-yellow-800'); gpsIcon.classList.add('fa-satellite-dish'); if (accuracy) { gpsAccuracy.innerText = `±${accuracy}m`; gpsAccuracy.className = 'text-xs font-bold bg-yellow-200 text-yellow-900 px-2 py-1 rounded-full'; } else gpsAccuracy.classList.add('hidden'); } else { gpsStatusDiv.classList.add('bg-red-100', 'border-red-200', 'text-red-800'); gpsIcon.classList.add('fa-exclamation-triangle'); gpsAccuracy.classList.add('hidden'); } }
 
-        let toastTimeout; function showToast(message, type = 'success') { const toastContainer = document.getElementById('toast-container'); const toastMessage = document.getElementById('toast-message'); const toastIcon = document.getElementById('toast-icon'); toastMessage.innerText = message; toastIcon.className = type === 'success' ? 'fas fa-check-circle text-green-400' : (type === 'info' ? 'fas fa-spinner fa-spin text-blue-400' : 'fas fa-exclamation-triangle text-red-400'); toastContainer.classList.add('show'); clearTimeout(toastTimeout); toastTimeout = setTimeout(() => { toastContainer.classList.remove('show'); }, type === 'info' ? 10000 : 3000); }
+        let toastTimeout; function showToast(message, type = 'success') { const toastContainer = document.getElementById('toast-container'); const toastMessage = document.getElementById('toast-message'); const toastIcon = document.getElementById('toast-icon'); toastMessage.innerText = message; toastIcon.className = type === 'success' ? 'fas fa-check-circle text-green-400' : (type === 'info' ? 'fas fa-spinner fa-spin text-blue-400' : 'fas fa-exclamation-triangle text-red-400'); toastContainer.classList.add('show'); clearTimeout(toastTimeout); toastTimeout = setTimeout(() => { toastContainer.classList.remove('show'); }, type === 'info' ? 10000 : 3500); }
 
         function recordData(classId, className) {
             if (!currentPosition) { showToast("Attendez que le GPS soit prêt (Vert ou Jaune).", "error"); if(navigator.vibrate) navigator.vibrate([200, 100, 200]); return; }
@@ -391,7 +459,7 @@
             const historyList = document.getElementById('history-list'); document.getElementById('record-count').innerText = records.length; historyList.innerHTML = '';
             if (records.length === 0) { historyList.innerHTML = '<li class="p-4 text-center text-gray-500 text-sm h-full flex items-center justify-center">Aucun relevé.</li>'; return; }
             const displayRecords = records.slice(0, 50);
-            displayRecords.forEach(rec => { const date = new Date(rec.timestamp); const timeStr = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); const dotColorClass = classColors[rec.classId].tailwind; const operatorStr = rec.operator ? `<span class="bg-gray-100 px-1.5 py-0.5 rounded text-gray-500 text-[10px] ml-1">${rec.operator}</span>` : ''; const li = document.createElement('li'); li.className = 'p-3 flex items-center justify-between hover:bg-gray-50 transition'; li.innerHTML = `<div class="flex items-center gap-3 overflow-hidden"><div class="w-4 h-4 rounded-full ${dotColorClass} flex-shrink-0 shadow-sm border border-black/10"></div><div class="flex flex-col overflow-hidden"><span class="font-bold text-gray-800 text-sm truncate flex items-center">Classe ${rec.classId} ${operatorStr}</span><span class="text-xs text-gray-500 truncate">Dept ${rec.department} • ${rec.lat}, ${rec.lng}</span></div></div><span class="text-xs font-mono text-gray-400 ml-2">${timeStr}</span>`; historyList.appendChild(li); });
+            displayRecords.forEach(rec => { const date = new Date(rec.timestamp); const timeStr = date.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }); const dotColorClass = (classColors[rec.classId] || classColors[0]).tailwind; const operatorStr = rec.operator ? `<span class="bg-gray-100 px-1.5 py-0.5 rounded text-gray-500 text-[10px] ml-1">${rec.operator}</span>` : ''; const li = document.createElement('li'); li.className = 'p-3 flex items-center justify-between hover:bg-gray-50 transition'; li.innerHTML = `<div class="flex items-center gap-3 overflow-hidden"><div class="w-4 h-4 rounded-full ${dotColorClass} flex-shrink-0 shadow-sm border border-black/10"></div><div class="flex flex-col overflow-hidden"><span class="font-bold text-gray-800 text-sm truncate flex items-center">Classe ${rec.classId} ${operatorStr}</span><span class="text-xs text-gray-500 truncate">Dept ${rec.department} • ${rec.lat}, ${rec.lng}</span></div></div><span class="text-xs font-mono text-gray-400 ml-2">${timeStr}</span>`; historyList.appendChild(li); });
         }
 
         function toggleDropdown(id) { const dropdown = document.getElementById(`dropdown-${id}`); const isHidden = dropdown.classList.contains('hidden'); document.querySelectorAll('[id^="dropdown-"]').forEach(el => el.classList.add('hidden')); if (isHidden) dropdown.classList.remove('hidden'); }
@@ -453,7 +521,7 @@
 
         function updateStats() {
             let filteredRecords = getFilteredRecords(); let counts = {0: 0, 1: 0, 2: 0, 3: 0}; let deptCounts = {};
-            filteredRecords.forEach(r => { counts[r.classId]++; let dept = r.department || "Inconnu"; if (dept !== "Calcul...") deptCounts[dept] = (deptCounts[dept] || 0) + 1; });
+            filteredRecords.forEach(r => { if (counts[r.classId] !== undefined) counts[r.classId]++; let dept = r.department || "Inconnu"; if (dept !== "Calcul...") deptCounts[dept] = (deptCounts[dept] || 0) + 1; });
             const total = filteredRecords.length; document.getElementById('stats-summary').innerText = `Total des relevés affichés : ${total}`;
             const detailsDiv = document.getElementById('stats-details');
             if (detailsDiv) {
