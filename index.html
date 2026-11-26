@@ -154,12 +154,17 @@
                         <div class="flex items-center gap-2"><span class="w-3 h-3 rounded-full bg-[#dc2626] border border-black/10 block"></span>Classe 3 (>50%)</div>
                     </div>
                 </div>
-                <!-- Panneau Route (Exploration) -->
-                <div id="route-panel" class="hidden absolute top-14 left-2 z-[900] bg-white/95 backdrop-blur-sm p-2.5 rounded-lg shadow-xl border border-purple-200 flex flex-col items-center gap-2 min-w-[230px] transition-all print-hide">
-                    <div id="route-info" class="text-purple-800 font-bold text-sm text-center w-full">Cliquez sur la carte pour tracer</div>
-                    <div class="flex gap-2 w-full">
+                <!-- Panneau Navigation / Itinéraire dynamique -->
+                <div id="route-panel" class="hidden absolute top-14 left-2 z-[900] bg-white/95 backdrop-blur-sm p-2.5 rounded-xl shadow-xl border border-purple-200 flex flex-col items-center gap-2 min-w-[235px] max-w-[270px] transition-all print-hide">
+                    <div id="route-dest-label" class="hidden text-[11px] font-bold text-gray-600 truncate w-full text-center border-b border-gray-100 pb-1"></div>
+                    <div id="route-info" class="text-purple-800 font-bold text-sm text-center w-full leading-tight">Appuyez sur un point pour tracer</div>
+                    <div id="route-live-badge" class="hidden text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full flex items-center gap-1.5">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>Suivi GPS &amp; Recalcul auto actifs
+                    </div>
+                    <div class="flex gap-1.5 w-full">
+                        <button onclick="forceRecalculateRoute()" title="Recalculer depuis le point bleu" class="px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-md text-xs font-bold border border-purple-200"><i class="fas fa-sync-alt"></i></button>
                         <button onclick="undoRoutePoint()" class="flex-1 px-2 py-1.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-xs font-medium"><i class="fas fa-undo mr-1"></i>Retrait</button>
-                        <button onclick="clearRoute()" class="flex-1 px-2 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-md text-xs font-medium"><i class="fas fa-trash mr-1"></i>Effacer</button>
+                        <button onclick="clearRoute()" class="flex-1 px-2 py-1.5 bg-red-100 hover:bg-red-200 text-red-700 rounded-md text-xs font-medium"><i class="fas fa-times mr-1"></i>Arrêter</button>
                     </div>
                 </div>
                 <div id="map-quick-record" class="absolute bottom-20 left-4 right-4 z-[400] bg-white/95 backdrop-blur-sm p-2 rounded-lg shadow-md border border-gray-200 flex items-center gap-2 print-hide md:max-w-lg md:left-1/2 md:-translate-x-1/2">
@@ -236,7 +241,6 @@
     <script>
         // =========================================================
         // CONFIGURATION GOOGLE SHEETS
-        // Remplacez "VOTRE_LIEN_GOOGLE_ICI" par votre lien /exec
         // =========================================================
         const GOOGLE_APP_URL = "https://script.google.com/macros/s/AKfycbw3VzKBt6b699WsNbALw2H_-g8_A7m3uzUtXJvi20sH5bYwgUq--47p8XiGyyTkeWpc/exec";
         const APP_NAME = "jaunisse"; // Ne pas modifier
@@ -245,7 +249,12 @@
         let currentUser = ""; let syncInterval = null; let isSyncing = false; let pendingSync = false;
         let deletedIds = new Set(); let pendingDeleteId = null;
         let currentPosition = null; let watchId = null; let records = []; let map = null; let mapLayerGroup = null; let deptGeoJsonLayer = null; let chartInstance = null; let userMarker = null; let accuracyCircle = null; let followGPS = true; let mapInitialCentered = false; let wakeLock = null; let wakeLockEnabled = false;
-        let routingControl = null; let isRouteMode = false; let routeWaypoints = [];
+        
+        // État de la navigation GPS & Recalcul automatique
+        let routingControl = null; let isRouteMode = false; let isLiveNav = false; let routeWaypoints = [];
+        let activeRouteCoords = []; let activeRouteSummary = null; let activeDestinationLabel = "";
+        let lastRerouteTime = 0; let lastReroutePos = null; let isRecalculatingRoute = false;
+
         let selectedDepts = new Set(); let selectedClasses = new Set(); let selectedOperators = new Set();
         const classColors = { 0: { hex: '#166534', tailwind: 'bg-[#166534]', name: 'Vert foncé' }, 1: { hex: '#86efac', tailwind: 'bg-[#86efac]', name: 'Vert pâle' }, 2: { hex: '#facc15', tailwind: 'bg-[#facc15]', name: 'Jaune' }, 3: { hex: '#dc2626', tailwind: 'bg-[#dc2626]', name: 'Rouge' } };
 
@@ -313,7 +322,6 @@
                 setCloudColor('text-blue-300');
                 if (icon) icon.classList.add('fa-fade');
 
-                // 1. Envoyer les relevés locaux et les suppressions vers Google Sheets
                 if (records.length > 0 || deletedIds.size > 0) {
                     await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME, {
                         method: 'POST',
@@ -323,7 +331,6 @@
                     });
                 }
 
-                // 2. Récupérer tous les relevés et suppressions de l'équipe depuis Google Sheets
                 const res = await fetch(GOOGLE_APP_URL + '?app=' + APP_NAME + '&v=2&_t=' + Date.now(), {
                     method: 'GET',
                     redirect: 'follow'
@@ -343,7 +350,6 @@
                     throw new Error("Format de réponse invalide");
                 }
 
-                // Appliquer les suppressions venant des autres téléphones
                 let removed = 0;
                 if (serverDeletedIds.length > 0) {
                     const delSet = new Set(serverDeletedIds.map(String));
@@ -447,7 +453,7 @@
             if ("geolocation" in navigator) { 
                 setGPSStatus('warning', 'Recherche du signal GPS...'); 
                 if(watchId) navigator.geolocation.clearWatch(watchId); 
-                watchId = navigator.geolocation.watchPosition(updatePosition, handleGPSError, { enableHighAccuracy: true, maximumAge: 5000, timeout: 15000 }); 
+                watchId = navigator.geolocation.watchPosition(updatePosition, handleGPSError, { enableHighAccuracy: true, maximumAge: 3000, timeout: 15000 }); 
             } else setGPSStatus('error', 'GPS non supporté.'); 
         }
         function setFollowGPSUI(active) { followGPS = active; const btn = document.getElementById('btn-follow-gps'); if (!btn) return; if (active) btn.className = 'bg-blue-600 text-white px-3 py-1.5 rounded-md hover:bg-blue-700 transition font-medium shadow-sm'; else btn.className = 'bg-gray-100 text-gray-600 px-3 py-1.5 rounded-md hover:bg-gray-200 transition font-medium shadow-sm'; }
@@ -463,7 +469,10 @@
                 updateUserMarkerOnMap(position); 
                 const isMapVisible = !document.getElementById('view-carte').classList.contains('hidden'); 
                 if (followGPS && isMapVisible) map.panTo([position.coords.latitude, position.coords.longitude], { animate: true }); 
-            } 
+            }
+            if (isLiveNav && routeWaypoints.length >= 2) {
+                handleLiveNavigationUpdate(position);
+            }
         }
         
         function handleGPSError(error) { 
@@ -478,7 +487,7 @@
 
         function setGPSStatus(status, message, accuracy = null) { const gpsStatusDiv = document.getElementById('gps-status'); const gpsIcon = document.getElementById('gps-icon'); const gpsText = document.getElementById('gps-text'); const gpsAccuracy = document.getElementById('gps-accuracy'); gpsText.innerText = message; gpsIcon.className = 'fas mr-2 '; gpsStatusDiv.className = 'cursor-pointer px-4 py-2 text-sm flex items-center justify-between border-b transition-colors duration-300 flex-shrink-0 z-50 '; gpsAccuracy.classList.remove('hidden'); if (status === 'good') { gpsStatusDiv.classList.add('bg-green-100', 'border-green-200', 'text-green-800'); gpsIcon.classList.add('fa-satellite-dish'); gpsAccuracy.innerText = `±${accuracy}m`; gpsAccuracy.className = 'text-xs font-bold bg-green-200 text-green-800 px-2 py-1 rounded-full'; } else if (status === 'warning') { gpsStatusDiv.classList.add('bg-yellow-100', 'border-yellow-200', 'text-yellow-800'); gpsIcon.classList.add('fa-satellite-dish'); if (accuracy) { gpsAccuracy.innerText = `±${accuracy}m`; gpsAccuracy.className = 'text-xs font-bold bg-yellow-200 text-yellow-900 px-2 py-1 rounded-full'; } else gpsAccuracy.classList.add('hidden'); } else { gpsStatusDiv.classList.add('bg-red-100', 'border-red-200', 'text-red-800'); gpsIcon.classList.add('fa-exclamation-triangle'); gpsAccuracy.classList.add('hidden'); } }
 
-        let toastTimeout; function showToast(message, type = 'success') { const toastContainer = document.getElementById('toast-container'); const toastMessage = document.getElementById('toast-message'); const toastIcon = document.getElementById('toast-icon'); toastMessage.innerText = message; toastIcon.className = type === 'success' ? 'fas fa-check-circle text-green-400' : (type === 'info' ? 'fas fa-spinner fa-spin text-blue-400' : 'fas fa-exclamation-triangle text-red-400'); toastContainer.classList.add('show'); clearTimeout(toastTimeout); toastTimeout = setTimeout(() => { toastContainer.classList.remove('show'); }, type === 'info' ? 10000 : 3500); }
+        let toastTimeout; function showToast(message, type = 'success') { const toastContainer = document.getElementById('toast-container'); const toastMessage = document.getElementById('toast-message'); const toastIcon = document.getElementById('toast-icon'); toastMessage.innerText = message; toastIcon.className = type === 'success' ? 'fas fa-check-circle text-green-400' : (type === 'info' ? 'fas fa-spinner fa-spin text-blue-400' : 'fas fa-exclamation-triangle text-red-400'); toastContainer.classList.add('show'); clearTimeout(toastTimeout); toastTimeout = setTimeout(() => { toastContainer.classList.remove('show'); }, type === 'info' ? 5000 : 3500); }
 
         function recordData(classId, className) {
             if (!currentPosition) { showToast("Attendez que le GPS soit prêt (Vert ou Jaune).", "error"); if(navigator.vibrate) navigator.vibrate([200, 100, 200]); return; }
@@ -569,7 +578,14 @@
         function getFilteredRecords() { return records.filter(r => { let matchDept = (selectedDepts.size === 0) || selectedDepts.has(r.department); let matchClass = (selectedClasses.size === 0) || selectedClasses.has(r.classId.toString()); let matchOp = (selectedOperators.size === 0) || (r.operator && selectedOperators.has(r.operator)); return matchDept && matchClass && matchOp; }); }
 
         function initOrUpdateMap() {
-            if (!map) { map = L.map('map', { zoomControl: false, renderer: L.canvas() }).setView([46.603354, 1.888334], 6); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, crossOrigin: true, attribution: '&copy; OpenStreetMap' }).addTo(map); L.control.zoom({ position: 'bottomright' }).addTo(map); mapLayerGroup = L.featureGroup().addTo(map); map.on('dragstart', function() { if (followGPS) setFollowGPSUI(false); }); map.on('click', function(e) { if (isRouteMode) addRoutePoint(e.latlng); }); }
+            if (!map) {
+                map = L.map('map', { zoomControl: false, renderer: L.canvas() }).setView([46.603354, 1.888334], 6);
+                L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, crossOrigin: true, attribution: '&copy; OpenStreetMap' }).addTo(map);
+                L.control.zoom({ position: 'bottomright' }).addTo(map);
+                mapLayerGroup = L.featureGroup().addTo(map);
+                map.on('dragstart', function() { if (followGPS) setFollowGPSUI(false); });
+                map.on('click', function(e) { if (isRouteMode) addRoutePoint(e.latlng, "Point carte"); });
+            }
             map.invalidateSize(); updateMapMarkers(); if (currentPosition) updateUserMarkerOnMap(currentPosition);
             if (!mapInitialCentered) { mapInitialCentered = true; setFollowGPSUI(true); const filtered = getFilteredRecords(); if (currentPosition && filtered.length > 0) map.setView([currentPosition.coords.latitude, currentPosition.coords.longitude], 12, { animate: false }); else if (currentPosition) map.setView([currentPosition.coords.latitude, currentPosition.coords.longitude], 14, { animate: false }); else if (filtered.length > 0) map.fitBounds(mapLayerGroup.getBounds(), { padding: [40, 40], animate: false }); } else if (followGPS && currentPosition) { map.panTo([currentPosition.coords.latitude, currentPosition.coords.longitude], { animate: false }); }
             setTimeout(() => { if (map) { map.invalidateSize(); updateMapMarkers(); } }, 150); setTimeout(() => { if (map) map.invalidateSize(); }, 400);
@@ -582,7 +598,40 @@
 
         function updateMapMarkers() {
             if (!mapLayerGroup) return; mapLayerGroup.clearLayers(); let count = 0;
-            getFilteredRecords().forEach(rec => { const lat = parseFloat(rec.lat); const lng = parseFloat(rec.lng); if (isNaN(lat) || isNaN(lng)) return; const colorInfo = classColors[rec.classId] || classColors[0]; const safeId = String(rec.id).replace(/[^a-zA-Z0-9_-]/g, ''); const marker = L.circleMarker([lat, lng], { radius: 7, fillColor: colorInfo.hex, color: '#ffffff', weight: 1.5, opacity: 1, fillOpacity: 0.95 }); const time = new Date(rec.timestamp).toLocaleTimeString('fr-FR'); marker.bindPopup(`<b>Classe ${rec.classId}</b><br>Dept: ${rec.department}<br>Opérateur: ${rec.operator || 'Inconnu'}<br>Heure: ${time}<div class="mt-2 pt-2 border-t border-gray-200"><button onclick="requestDeleteSingleRecord('${safeId}')" class="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs py-1.5 px-2 rounded-md border border-red-200 flex items-center justify-center gap-1.5 transition"><i class="fas fa-trash-alt"></i> Supprimer ce point</button></div>`); mapLayerGroup.addLayer(marker); count++; });
+            getFilteredRecords().forEach(rec => {
+                const lat = parseFloat(rec.lat); const lng = parseFloat(rec.lng);
+                if (isNaN(lat) || isNaN(lng)) return;
+                const colorInfo = classColors[rec.classId] || classColors[0];
+                const safeId = String(rec.id).replace(/[^a-zA-Z0-9_-]/g, '');
+                const marker = L.circleMarker([lat, lng], { radius: 8, fillColor: colorInfo.hex, color: '#ffffff', weight: 1.8, opacity: 1, fillOpacity: 0.95 });
+                const time = new Date(rec.timestamp).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+                const popupHtml = `
+                    <div class="min-w-[180px]">
+                        <div class="font-bold text-gray-900">Classe ${rec.classId}</div>
+                        <div class="text-xs text-gray-600 mt-0.5">Dept: ${rec.department} • ${time}<br>Opérateur: ${rec.operator || 'Inconnu'}</div>
+                        <div class="mt-2 pt-2 border-t border-gray-200 flex flex-col gap-1.5">
+                            <button onclick="navigateToRecord('${safeId}')" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs py-1.5 px-2.5 rounded-md shadow-sm flex items-center justify-center gap-1.5 transition">
+                                <i class="fas fa-directions"></i> Itinéraire (Y aller)
+                            </button>
+                            <button onclick="addRecordAsWaypoint('${safeId}')" class="w-full bg-purple-50 hover:bg-purple-100 text-purple-700 font-bold text-xs py-1 px-2.5 rounded-md border border-purple-200 flex items-center justify-center gap-1.5 transition">
+                                <i class="fas fa-plus"></i> Ajouter comme étape
+                            </button>
+                            <button onclick="requestDeleteSingleRecord('${safeId}')" class="w-full bg-red-50 hover:bg-red-100 text-red-600 font-bold text-xs py-1 px-2.5 rounded-md border border-red-200 flex items-center justify-center gap-1.5 transition">
+                                <i class="fas fa-trash-alt"></i> Supprimer ce point
+                            </button>
+                        </div>
+                    </div>`;
+                marker.bindPopup(popupHtml);
+                marker.on('click', function(e) {
+                    if (isRouteMode) {
+                        L.DomEvent.stopPropagation(e);
+                        marker.closePopup();
+                        addRoutePoint(L.latLng(lat, lng), `Classe ${rec.classId} (Dept ${rec.department})`);
+                    }
+                });
+                mapLayerGroup.addLayer(marker);
+                count++;
+            });
             mapLayerGroup.bringToFront(); if (userMarker) userMarker.bringToFront(); document.getElementById('map-point-count').innerText = count;
         }
 
@@ -592,11 +641,331 @@
             else if (currentPosition) enableFollowGPS();
         }
 
-        function toggleRouteMode() { isRouteMode = !isRouteMode; const btnRoute = document.getElementById('btn-route'); const routePanel = document.getElementById('route-panel'); if (isRouteMode) { btnRoute.classList.replace('bg-purple-100', 'bg-purple-600'); btnRoute.classList.replace('text-purple-700', 'text-white'); if (currentPosition && routeWaypoints.length === 0) routeWaypoints = [L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude)]; if (routeWaypoints.length >= 2) routePanel.classList.remove('hidden'); showToast("Mode Exploration activé.", "info"); } else { btnRoute.classList.replace('bg-purple-600', 'bg-purple-100'); btnRoute.classList.replace('text-white', 'text-purple-700'); routePanel.classList.add('hidden'); showToast("Mode Exploration désactivé"); } }
-        function addRoutePoint(latlng) { if (routeWaypoints.length === 0 && currentPosition) routeWaypoints.push(L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude)); routeWaypoints.push(latlng); updateRoutingControl(); }
-        function undoRoutePoint() { if (routeWaypoints.length > 1) { routeWaypoints.pop(); updateRoutingControl(); } if (routeWaypoints.length < 2) document.getElementById('route-panel').classList.add('hidden'); }
-        function clearRoute() { routeWaypoints = currentPosition ? [L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude)] : []; if (routingControl) { routingControl.setWaypoints([]); map.removeControl(routingControl); routingControl = null; } document.getElementById('route-info').innerHTML = ''; document.getElementById('route-panel').classList.add('hidden'); }
-        function updateRoutingControl() { const routePanel = document.getElementById('route-panel'); if (routeWaypoints.length < 2) { if (routingControl) { routingControl.setWaypoints([]); map.removeControl(routingControl); routingControl = null; } document.getElementById('route-info').innerHTML = ''; routePanel.classList.add('hidden'); return; } routePanel.classList.remove('hidden'); document.getElementById('route-info').innerHTML = `<i class="fas fa-spinner fa-spin mr-2"></i>Calcul...`; if (routingControl) { routingControl.setWaypoints(routeWaypoints); } else { routingControl = L.Routing.control({ waypoints: routeWaypoints, routeWhileDragging: true, show: false, addWaypoints: true, router: L.Routing.osrmv1({ language: 'fr', profile: 'driving' }), lineOptions: { styles: [{color: '#8b5cf6', opacity: 0.9, weight: 6, dashArray: '10, 10'}], extendToWaypoints: true, missingRouteTolerance: 0 }, createMarker: function(i, wp, nWps) { if (i === 0) return null; const isLast = (i === nWps - 1); return L.marker(wp.latLng, { draggable: true, icon: L.divIcon({ className: isLast ? 'bg-red-500 w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(220,38,38,0.8)]' : 'bg-purple-500 w-3 h-3 rounded-full border border-white opacity-90 shadow-sm', iconSize: isLast ? [16, 16] : [12, 12] }) }).bindPopup(isLast ? "<b>Arrivée</b>" : "<b>Étape</b>"); } }).addTo(map); routingControl.on('routesfound', function(e) { if (routeWaypoints.length < 2) { routePanel.classList.add('hidden'); return; } const summary = e.routes[0].summary; const timeMinutes = Math.round(summary.totalTime / 60); const hours = Math.floor(timeMinutes / 60); const mins = timeMinutes % 60; const timeStr = hours > 0 ? `${hours}h${mins.toString().padStart(2, '0')}` : `${mins} min`; const distKm = (summary.totalDistance / 1000).toFixed(1); document.getElementById('route-info').innerHTML = `🚗 <b>${distKm} km</b> &nbsp;&bull;&nbsp; ⏳ <b>${timeStr}</b>`; }); routingControl.on('waypointschanged', function(e) { routeWaypoints = e.waypoints.map(wp => wp.latLng).filter(ll => ll !== null); if (routeWaypoints.length < 2) routePanel.classList.add('hidden'); }); routingControl.on('routingerror', function(e) { if (routeWaypoints.length < 2) return; document.getElementById('route-info').innerHTML = `<span class="text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i> Erreur tracé</span>`; showToast("Impossible de tracer.", "error"); }); } }
+        // =========================================================
+        // NAVIGATION GPS DYNAMIQUE & RECALCUL AUTOMATIQUE
+        // =========================================================
+        function formatNavDistance(meters) {
+            if (meters < 1000) return `${Math.max(10, Math.round(meters / 10) * 10)} m`;
+            return `${(meters / 1000).toFixed(1).replace('.', ',')} km`;
+        }
+
+        function formatNavTime(seconds) {
+            const mins = Math.max(1, Math.round(seconds / 60));
+            const h = Math.floor(mins / 60);
+            const m = mins % 60;
+            return h > 0 ? `${h}h${m.toString().padStart(2, '0')}` : `${m} min`;
+        }
+
+        function getDistanceToSegmentMeters(p, a, b) {
+            const cosLat = Math.cos(p.lat * Math.PI / 180);
+            const R = 111320;
+            const px = p.lng * cosLat * R, py = p.lat * R;
+            const ax = a.lng * cosLat * R, ay = a.lat * R;
+            const bx = b.lng * cosLat * R, by = b.lat * R;
+            const dx = bx - ax, dy = by - ay;
+            const lenSq = dx * dx + dy * dy;
+            let t = 0;
+            if (lenSq > 0) t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lenSq));
+            const projX = ax + t * dx;
+            const projY = ay + t * dy;
+            return {
+                dist: Math.hypot(px - projX, py - projY),
+                projLatLng: L.latLng(projY / R, projX / (cosLat * R))
+            };
+        }
+
+        function computeRouteProgress(userLatLng) {
+            if (!activeRouteCoords || activeRouteCoords.length < 2) return null;
+            let minDist = Infinity;
+            let bestIdx = 0;
+            let bestProj = activeRouteCoords[0];
+
+            for (let i = 0; i < activeRouteCoords.length - 1; i++) {
+                const seg = getDistanceToSegmentMeters(userLatLng, activeRouteCoords[i], activeRouteCoords[i + 1]);
+                if (seg.dist < minDist) {
+                    minDist = seg.dist;
+                    bestIdx = i;
+                    bestProj = seg.projLatLng;
+                }
+            }
+
+            let remainingDist = bestProj.distanceTo(activeRouteCoords[bestIdx + 1]);
+            for (let i = bestIdx + 1; i < activeRouteCoords.length - 1; i++) {
+                remainingDist += activeRouteCoords[i].distanceTo(activeRouteCoords[i + 1]);
+            }
+
+            let remainingTime = remainingDist / 13.8;
+            if (activeRouteSummary && activeRouteSummary.totalDistance > 0) {
+                remainingTime = activeRouteSummary.totalTime * Math.min(1.5, remainingDist / activeRouteSummary.totalDistance);
+            }
+            return { minDist, remainingDist, remainingTime };
+        }
+
+        function handleLiveNavigationUpdate(position) {
+            if (!isLiveNav || routeWaypoints.length < 2) return;
+            const userLatLng = L.latLng(position.coords.latitude, position.coords.longitude);
+            const accuracy = position.coords.accuracy || 15;
+            const nextTarget = routeWaypoints[1];
+            const distToNext = userLatLng.distanceTo(nextTarget);
+
+            // Vérification d'arrivée au point cible ou à une étape
+            if (distToNext <= 25) {
+                if (routeWaypoints.length > 2) {
+                    routeWaypoints.splice(1, 1);
+                    routeWaypoints[0] = userLatLng;
+                    lastRerouteTime = Date.now();
+                    lastReroutePos = userLatLng;
+                    isRecalculatingRoute = true;
+                    showToast("Étape atteinte ! Calcul vers la suivante...");
+                    updateRoutingControl(false);
+                    return;
+                } else {
+                    document.getElementById('route-info').innerHTML = `<span class="text-emerald-700"><i class="fas fa-flag-checkered mr-1"></i>Arrivé au point !</span>`;
+                    isLiveNav = false;
+                    document.getElementById('route-live-badge').classList.add('hidden');
+                    showToast("Vous êtes arrivé au point !");
+                    return;
+                }
+            }
+
+            if (!activeRouteCoords || activeRouteCoords.length < 2) return;
+
+            const progress = computeRouteProgress(userLatLng);
+            if (!progress) return;
+
+            // Mise à jour instantanée des km / m et du temps restant
+            if (!isRecalculatingRoute) {
+                const distStr = formatNavDistance(progress.remainingDist);
+                const timeStr = formatNavTime(progress.remainingTime);
+                document.getElementById('route-info').innerHTML = `🚗 <b>${distStr}</b> &nbsp;&bull;&nbsp; ⏳ <b>${timeStr}</b>`;
+            }
+
+            const now = Date.now();
+            // Seuil hors-route adaptatif selon la précision GPS (minimum 45 m, max 90 m)
+            const offRouteLimit = Math.max(45, Math.min(accuracy * 1.5, 90));
+
+            if (progress.minDist > offRouteLimit) {
+                if (!isRecalculatingRoute && (now - lastRerouteTime > 7000)) {
+                    isRecalculatingRoute = true;
+                    lastRerouteTime = now;
+                    lastReroutePos = userLatLng;
+                    routeWaypoints[0] = userLatLng;
+                    document.getElementById('route-info').innerHTML = `<span class="text-amber-600"><i class="fas fa-sync fa-spin mr-1"></i>Hors route — Recalcul...</span>`;
+                    showToast("Changement de route détecté : recalcul...", "info");
+                    updateRoutingControl(false);
+                }
+            } else if (!isRecalculatingRoute && lastReroutePos && userLatLng.distanceTo(lastReroutePos) > 150 && (now - lastRerouteTime > 15000)) {
+                // Rafraîchissement discret du tracé depuis la nouvelle position du point bleu
+                isRecalculatingRoute = true;
+                lastRerouteTime = now;
+                lastReroutePos = userLatLng;
+                routeWaypoints[0] = userLatLng;
+                updateRoutingControl(false);
+            }
+        }
+
+        function navigateToRecord(id) {
+            const rec = records.find(r => String(r.id) === String(id));
+            if (!rec) return;
+            if (!currentPosition) {
+                showToast("Attendez le signal GPS (point bleu) pour lancer l'itinéraire.", "error");
+                return;
+            }
+            const lat = parseFloat(rec.lat); const lng = parseFloat(rec.lng);
+            if (isNaN(lat) || isNaN(lng)) return;
+            if (map) map.closePopup();
+
+            const startLatLng = L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude);
+            const destLatLng = L.latLng(lat, lng);
+            activeDestinationLabel = `Vers Classe ${rec.classId} (Dept ${rec.department})`;
+            isLiveNav = true;
+            routeWaypoints = [startLatLng, destLatLng];
+            lastRerouteTime = Date.now();
+            lastReroutePos = startLatLng;
+            isRecalculatingRoute = true;
+            setFollowGPSUI(true);
+            updateRoutingControl(true);
+            showToast(`Itinéraire lancé : ${activeDestinationLabel}`);
+        }
+
+        function addRecordAsWaypoint(id) {
+            const rec = records.find(r => String(r.id) === String(id));
+            if (!rec) return;
+            const lat = parseFloat(rec.lat); const lng = parseFloat(rec.lng);
+            if (isNaN(lat) || isNaN(lng)) return;
+            if (map) map.closePopup();
+            addRoutePoint(L.latLng(lat, lng), `Classe ${rec.classId} (Dept ${rec.department})`);
+        }
+
+        function forceRecalculateRoute() {
+            if (routeWaypoints.length < 2) return;
+            if (currentPosition) {
+                const userLatLng = L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude);
+                routeWaypoints[0] = userLatLng;
+                isLiveNav = true;
+                lastReroutePos = userLatLng;
+            }
+            lastRerouteTime = Date.now();
+            isRecalculatingRoute = true;
+            document.getElementById('route-info').innerHTML = `<i class="fas fa-sync fa-spin mr-1"></i>Recalcul en cours...`;
+            updateRoutingControl(false);
+        }
+
+        function toggleRouteMode() {
+            isRouteMode = !isRouteMode;
+            const btnRoute = document.getElementById('btn-route');
+            const routePanel = document.getElementById('route-panel');
+            if (isRouteMode) {
+                btnRoute.classList.replace('bg-purple-100', 'bg-purple-600');
+                btnRoute.classList.replace('text-purple-700', 'text-white');
+                if (currentPosition && routeWaypoints.length === 0) {
+                    routeWaypoints = [L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude)];
+                    isLiveNav = true;
+                }
+                if (routeWaypoints.length >= 2) routePanel.classList.remove('hidden');
+                showToast("Mode Explorer actif : appuyez sur des points notés ou la carte !", "info");
+            } else {
+                btnRoute.classList.replace('bg-purple-600', 'bg-purple-100');
+                btnRoute.classList.replace('text-white', 'text-purple-700');
+                if (routeWaypoints.length < 2) routePanel.classList.add('hidden');
+                showToast("Mode Explorer désactivé");
+            }
+        }
+
+        function addRoutePoint(latlng, label = "") {
+            if (routeWaypoints.length === 0) {
+                if (currentPosition) {
+                    routeWaypoints.push(L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude));
+                    isLiveNav = true;
+                } else {
+                    isLiveNav = false;
+                }
+            }
+            routeWaypoints.push(latlng);
+            if (label) activeDestinationLabel = routeWaypoints.length > 2 ? `${routeWaypoints.length - 1} étapes • Fin : ${label}` : `Vers ${label}`;
+            lastRerouteTime = Date.now();
+            lastReroutePos = routeWaypoints[0];
+            isRecalculatingRoute = true;
+            updateRoutingControl(true);
+            if (label) showToast(`Ajouté à l'itinéraire : ${label}`);
+        }
+
+        function undoRoutePoint() {
+            if (routeWaypoints.length > 1) {
+                routeWaypoints.pop();
+                if (routeWaypoints.length >= 2) {
+                    isRecalculatingRoute = true;
+                    updateRoutingControl(false);
+                } else {
+                    clearRoute();
+                }
+            } else {
+                clearRoute();
+            }
+        }
+
+        function clearRoute() {
+            isLiveNav = false;
+            isRecalculatingRoute = false;
+            activeRouteCoords = [];
+            activeRouteSummary = null;
+            activeDestinationLabel = "";
+            lastReroutePos = null;
+            routeWaypoints = (isRouteMode && currentPosition) ? [L.latLng(currentPosition.coords.latitude, currentPosition.coords.longitude)] : [];
+            if (routingControl) {
+                routingControl.setWaypoints([]);
+                map.removeControl(routingControl);
+                routingControl = null;
+            }
+            document.getElementById('route-info').innerHTML = '';
+            document.getElementById('route-dest-label').classList.add('hidden');
+            document.getElementById('route-live-badge').classList.add('hidden');
+            document.getElementById('route-panel').classList.add('hidden');
+        }
+
+        function updateRoutingControl(fitOnFound = false) {
+            const routePanel = document.getElementById('route-panel');
+            const destLabelEl = document.getElementById('route-dest-label');
+            const liveBadgeEl = document.getElementById('route-live-badge');
+
+            if (routeWaypoints.length < 2) {
+                if (routingControl) { routingControl.setWaypoints([]); map.removeControl(routingControl); routingControl = null; }
+                document.getElementById('route-info').innerHTML = '';
+                routePanel.classList.add('hidden');
+                return;
+            }
+
+            routePanel.classList.remove('hidden');
+            if (activeDestinationLabel) {
+                destLabelEl.innerText = activeDestinationLabel;
+                destLabelEl.classList.remove('hidden');
+            } else {
+                destLabelEl.classList.add('hidden');
+            }
+            if (isLiveNav) liveBadgeEl.classList.remove('hidden');
+            else liveBadgeEl.classList.add('hidden');
+
+            if (routingControl) {
+                routingControl.setWaypoints(routeWaypoints);
+            } else {
+                routingControl = L.Routing.control({
+                    waypoints: routeWaypoints,
+                    routeWhileDragging: true,
+                    show: false,
+                    addWaypoints: false,
+                    fitSelectedRoutes: false,
+                    router: L.Routing.osrmv1({ language: 'fr', profile: 'driving' }),
+                    lineOptions: {
+                        styles: [{ color: '#7c3aed', opacity: 0.9, weight: 6, dashArray: '10, 8' }],
+                        extendToWaypoints: true,
+                        missingRouteTolerance: 0
+                    },
+                    createMarker: function(i, wp, nWps) {
+                        if (i === 0 && isLiveNav) return null;
+                        const isLast = (i === nWps - 1);
+                        return L.marker(wp.latLng, {
+                            draggable: true,
+                            icon: L.divIcon({
+                                className: isLast ? 'bg-red-600 w-4 h-4 rounded-full border-2 border-white shadow-[0_0_10px_rgba(220,38,38,0.8)]' : 'bg-purple-600 w-3.5 h-3.5 rounded-full border-2 border-white shadow-sm',
+                                iconSize: isLast ? [16, 16] : [14, 14]
+                            })
+                        }).bindPopup(isLast ? "<b>Arrivée</b>" : `<b>Étape ${i}</b>`);
+                    }
+                }).addTo(map);
+
+                routingControl.on('routesfound', function(e) {
+                    isRecalculatingRoute = false;
+                    if (routeWaypoints.length < 2) { routePanel.classList.add('hidden'); return; }
+                    const route = e.routes[0];
+                    activeRouteCoords = route.coordinates || [];
+                    activeRouteSummary = route.summary;
+                    lastRerouteTime = Date.now();
+                    if (routeWaypoints[0]) lastReroutePos = routeWaypoints[0];
+
+                    const distStr = formatNavDistance(route.summary.totalDistance);
+                    const timeStr = formatNavTime(route.summary.totalTime);
+                    document.getElementById('route-info').innerHTML = `🚗 <b>${distStr}</b> &nbsp;&bull;&nbsp; ⏳ <b>${timeStr}</b>`;
+
+                    if (fitOnFound && activeRouteCoords.length > 1) {
+                        fitOnFound = false;
+                        setFollowGPSUI(false);
+                        map.fitBounds(L.latLngBounds(activeRouteCoords), { padding: [55, 55], animate: true });
+                    }
+                });
+
+                routingControl.on('waypointschanged', function(e) {
+                    const validWps = e.waypoints.map(wp => wp.latLng).filter(ll => ll !== null);
+                    if (validWps.length >= 2) routeWaypoints = validWps;
+                });
+
+                routingControl.on('routingerror', function() {
+                    isRecalculatingRoute = false;
+                    if (routeWaypoints.length < 2) return;
+                    document.getElementById('route-info').innerHTML = `<span class="text-red-500"><i class="fas fa-exclamation-triangle mr-1"></i> Erreur calcul route</span>`;
+                    showToast("Impossible de calculer la route (réseau ?).", "error");
+                });
+            }
+        }
 
         async function exportMapImage() { const mapContainer = document.getElementById('view-carte'); const uiElements = mapContainer.querySelectorAll('.print-hide, .leaflet-control-container'); uiElements.forEach(el => el.style.display = 'none'); showToast("Capture de la carte en cours...", "info"); await new Promise(resolve => setTimeout(resolve, 100)); try { const canvas = await html2canvas(mapContainer, { useCORS: true, allowTaint: false, backgroundColor: '#e5e5e5', scale: 2 }); const link = document.createElement('a'); const safeDate = new Date().toISOString().slice(0, 10); link.download = `Carte_Jaunisse_${safeDate}.png`; link.href = canvas.toDataURL('image/png'); link.click(); showToast("Image capturée avec succès !"); } catch(error) { showToast("Erreur lors de la capture de la carte.", "error"); } finally { uiElements.forEach(el => el.style.display = ''); } }
 
